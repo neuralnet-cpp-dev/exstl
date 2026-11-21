@@ -673,18 +673,22 @@ public:
     // 与 for_each（按元素分块）不同：每个"样本"包含一个完整的计算子任务
     // （如矩阵乘法、前向传播），样本间完全独立、无数据竞争。
     // 用于 GPT/Transformer batch 维度的并行：1 样本 = 1 分片。
+    // ⚠ 形参立刻拷入局部 total：CI Clang 22 + modules 下，直接在函数体用
+    // 形参名 num_samples 会误报「cannot be implicitly captured in a lambda」
+    // （诊断行号落在 lambda 之前的普通语句上；Clang 23 本地不复现）。
     template <typename Func> void parallel_for_samples(std::size_t num_samples, Func&& func)
     {
-        if (num_samples <= 1)
+        const std::size_t total = num_samples;
+        if (total <= 1)
         {
-            for (std::size_t i = 0; i < num_samples; ++i)
+            for (std::size_t i = 0; i < total; ++i)
                 func(i);
             return;
         }
 
-        const auto n_chunks = std::min(workers_.size(), num_samples);
-        const std::size_t base = num_samples / n_chunks;
-        const std::size_t rem = num_samples % n_chunks;
+        const auto n_chunks = std::min(workers_.size(), total);
+        const std::size_t base = total / n_chunks;
+        const std::size_t rem = total % n_chunks;
         // 本 region 独占一个调用者 slot（#C2），出区自动归还
         const std::size_t caller_slot = acquire_caller_slot();
         CallerSlotGuard caller_slot_guard{this, caller_slot};
@@ -719,11 +723,11 @@ public:
         // 调用者处理最后一个分片
         {
             const std::size_t c = n_chunks - 1;
-            const std::size_t start = num_samples - (base + (c < rem ? 1 : 0));
+            const std::size_t start = total - (base + (c < rem ? 1 : 0));
             run_chunk(st,
                       [&]
                       {
-                          for (std::size_t i = start; i < num_samples; ++i)
+                          for (std::size_t i = start; i < total; ++i)
                               func(i);
                       });
         }
